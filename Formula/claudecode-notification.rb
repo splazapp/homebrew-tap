@@ -16,21 +16,22 @@ class ClaudecodeNotification < Formula
     libexec.install "claudecode-notification.sh"
     libexec.install "dist/ClaudeCodeNotification.app"
     chmod 0755, libexec/"claudecode-notification.sh"
-  end
 
-  def post_install
-    # Register hooks in ~/.claude/settings.json
-    settings_file = File.expand_path("~/.claude/settings.json")
+    # Create setup script that registers hooks in ~/.claude/settings.json
+    (bin/"claudecode-notification-setup").write <<~BASH
+      #!/bin/bash
+      # Register ClaudeCodeNotification hooks in Claude Code settings
+      set -euo pipefail
 
-    hook_cmd = opt_libexec/"claudecode-notification.sh"
+      SETTINGS_FILE="$HOME/.claude/settings.json"
+      HOOK_CMD="#{opt_libexec}/claudecode-notification.sh"
 
-    system "/usr/bin/python3", "-c", <<~PYTHON
+      /usr/bin/python3 - "$SETTINGS_FILE" "$HOOK_CMD" << 'PYTHON'
       import json, sys, os
 
-      settings_path = "#{settings_file}"
-      hook_cmd = "#{hook_cmd}"
+      settings_path = sys.argv[1]
+      hook_cmd = sys.argv[2]
 
-      # Load existing settings or create new
       if os.path.exists(settings_path):
           with open(settings_path, 'r') as f:
               settings = json.load(f)
@@ -40,7 +41,6 @@ class ClaudecodeNotification < Formula
 
       hooks = settings.setdefault("hooks", {})
 
-      # Remove old claudecode-tap / claudecode-notification hooks
       for old_pattern in ["claudecode-tap", "claudecode-notification"]:
           for event in list(hooks.keys()):
               entries = hooks[event]
@@ -55,7 +55,6 @@ class ClaudecodeNotification < Formula
                   if not hooks[event]:
                       del hooks[event]
 
-      # Add new hooks
       for event in ["UserPromptSubmit", "Stop", "Notification"]:
           hook_entry = {
               "hooks": [{
@@ -78,28 +77,35 @@ class ClaudecodeNotification < Formula
       with open(settings_path, 'w') as f:
           json.dump(settings, f, indent=2, ensure_ascii=False)
           f.write('\\n')
-    PYTHON
+
+      print("Hooks registered in " + settings_path)
+      PYTHON
+
+      echo ""
+      echo "Done! On first notification, macOS will ask for permission — click Allow."
+    BASH
+    chmod 0755, bin/"claudecode-notification-setup"
+  end
+
+  def post_install
+    # Attempt to register hooks automatically (may fail in sandbox)
+    system bin/"claudecode-notification-setup"
+  rescue => e
+    opoo "Auto-registration failed (#{e.message}). Run manually: claudecode-notification-setup"
   end
 
   def caveats
     <<~EOS
-      Claude Code hooks have been registered in ~/.claude/settings.json
+      To register Claude Code hooks, run:
+        claudecode-notification-setup
 
       On first notification, macOS will ask for permission — click Allow.
 
-      To uninstall completely, also remove the hook entries from:
-        ~/.claude/settings.json
-
-      Or run this one-liner to clean up:
+      To uninstall completely, also remove hooks from ~/.claude/settings.json:
         python3 -c "
-      import json
-      p = '$HOME/.claude/settings.json'
-      s = json.load(open(p))
-      for e in list(s.get('hooks', {})):
-          s['hooks'][e] = [x for x in s['hooks'][e] if not any('claudecode-notification' in h.get('command','') for h in x.get('hooks',[]))]
-          if not s['hooks'][e]: del s['hooks'][e]
-      json.dump(s, open(p,'w'), indent=2, ensure_ascii=False)
-      "
+      import json; p='$HOME/.claude/settings.json'; s=json.load(open(p))
+      [s['hooks'].pop(e) for e in list(s.get('hooks',{})) if not [s['hooks'][e].remove(x) for x in s['hooks'][e] if any('claudecode-notification' in h.get('command','') for h in x.get('hooks',[]))]]
+      json.dump(s,open(p,'w'),indent=2,ensure_ascii=False)"
     EOS
   end
 
